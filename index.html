@@ -1,1 +1,232 @@
-<!doctype html><html lang=""><head><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="laowuplus/favicon.ico"><title>laowuplus</title><script defer="defer" src="laowuplus/js/chunk-vendors.6955aa0f.js"></script><script defer="defer" src="laowuplus/js/app.6a4c714a.js"></script><link href="laowuplus/css/app.648d1db1.css" rel="stylesheet"></head><body><noscript><strong>We're sorry but laowuplus doesn't work properly without JavaScript enabled. Please enable it to continue.</strong></noscript><div id="app"></div></body></html>
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Mutated Construct Simulator - 简化读条版</title>
+  <style>
+    body { font-family: Arial, sans-serif; background: #f4f4f4; text-align: center; margin: 50px; }
+    h1 { font-size: 32px; margin-bottom: 20px; }
+    .bar-container { width: 400px; background: #ddd; border-radius: 10px; margin: 10px auto; height: 30px; position: relative; }
+    .bar { height: 100%; border-radius: 10px; text-align: center; color: white; line-height: 30px; font-weight: bold; }
+    #health-bar { background: #e74c3c; }
+    #energy-bar { background: #3498db; }
+    #explosion-bar, #big-add-bar { background: #f39c12; height: 100%; width: 0%; transition: width 0.05s linear; border-radius: 5px; }
+    button { padding: 15px 30px; font-size: 18px; margin: 10px; border: none; border-radius: 10px; cursor: pointer; position: relative; overflow: hidden; }
+    button.disabled { background: #999 !important; cursor: not-allowed; }
+    .cooldown-ring { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border-radius: 10px; transform: rotate(270deg); }
+    #log { margin-top: 20px; font-size: 20px; font-weight: bold; }
+    .mode-btn { font-size: 24px; padding: 20px 40px; margin: 20px; border-radius: 20px; }
+    #restart-btn { font-size: 24px; padding: 20px 40px; margin-top: 40px; border-radius: 20px; background: #2ecc71; color: white; display: none; }
+    #vuln-buff { margin-top: 20px; font-size: 20px; font-weight: bold; color: #e67e22; }
+    #big-add-prepare { margin-top: 10px; font-size: 20px; color: orange; }
+    #stop-dps { margin-top: 10px; font-size: 24px; color: red; font-weight: bold; display: none; }
+  </style>
+</head>
+<body>
+
+  <h1>Mutated Construct Simulator</h1>
+
+  <div id="mode-selection">
+    <button class="mode-btn" onclick="startGame('dps_focus')">DPS集火版</button>
+    <button class="mode-btn" onclick="startGame('dps_smooth')">DPS平缓版</button>
+    <button class="mode-btn" onclick="startGame('advanced')">高阶特训版</button>
+  </div>
+
+  <div id="game-ui" style="display:none;">
+    <div>Health</div>
+    <div class="bar-container"><div id="health-bar" class="bar">100%</div></div>
+    <div id="stop-dps">DPS停手！</div>
+
+    <div>Energy</div>
+    <div class="bar-container"><div id="energy-bar" class="bar">100</div></div>
+
+    <div>自身爆炸读条</div>
+    <div class="bar-container" style="height: 20px;"><div id="explosion-bar"></div></div>
+
+    <div id="big-add-section" style="display:none;">
+      <div>大怪爆炸读条</div>
+      <div class="bar-container" style="height: 20px;"><div id="big-add-bar"></div></div>
+      <div id="big-add-prepare"></div>
+    </div>
+
+    <div id="vuln-buff">易伤: 0% (剩余时间: 0s)</div>
+
+    <div>
+      <button id="skill1" style="background:#e67e22;">1: 易伤<div class="cooldown-ring" id="skill1-cd"></div></button>
+      <button id="skill2" style="background:#c0392b;">2: 打断<div class="cooldown-ring" id="skill2-cd"></div></button>
+      <button id="skill3" style="background:#27ae60;">3: 吃水</button>
+      <button id="skill4" style="background:#f1c40f;">4: 脱离</button>
+    </div>
+
+    <div id="log"></div>
+  </div>
+
+  <button id="restart-btn" onclick="resetGame()">重新开始</button>
+
+  <script>
+
+
+
+    let mode = "", health, energy, skill1CD, skill2CD;
+let gameInterval, smoothInterval;
+let selfExplosionInterval, bigAddPrepareInterval, bigAddCastInterval;
+let selfExplosionCasting = false, bigAddCasting = false;
+let selfExplosionTimer = 0, bigAddTimer = 0, nextBigAdd = 35;
+let selfExplosionCastInterval = null;
+let vulnStack = 0, vulnTimer = 0;
+
+function startGame(selectedMode) {
+  mode = selectedMode;
+  document.getElementById("mode-selection").style.display = 'none';
+  document.getElementById("game-ui").style.display = 'block';
+  document.getElementById("restart-btn").style.display = 'none';
+  document.getElementById("big-add-prepare").innerText = '';
+  document.getElementById("stop-dps").style.display = 'none';
+
+  if(mode === "advanced") document.getElementById("big-add-section").style.display = 'block';
+  else document.getElementById("big-add-section").style.display = 'none';
+
+  health = 100; energy = 100; skill1CD = 0; skill2CD = 0; vulnStack = 0; vulnTimer = 0; nextBigAdd = 35;
+  updateAll();
+  log("游戏开始！");
+  gameInterval = setInterval(gameLoop, 1000);
+  smoothInterval = setInterval(updateAll, 50);
+  startSelfExplosionLoop();
+  if (mode === "advanced") startBigAddPrepare();
+}
+
+function gameLoop() {
+  if (!selfExplosionCasting && !bigAddCasting) {
+    if (mode !== "advanced") {
+      const hpLoss = (health > 25 ? (mode === "dps_focus" ? 3 : 2) : (health > 20 ? 1 : 1));
+      health = Math.max(health - hpLoss, 0);
+      document.getElementById("stop-dps").style.display = (health <= 25) ? 'block' : 'none';
+    }
+    energy = Math.max(energy - 2, 0);
+  }
+  if (vulnTimer > 0) {
+    vulnTimer--;
+    if (vulnTimer === 0) vulnStack = 0;
+  }
+  if (health <= 0 || energy <= 0) gameOver("Game Over! 你已死亡！");
+  if (skill1CD > 0) skill1CD--;
+  if (skill2CD > 0) skill2CD--;
+}
+
+function updateAll() {
+  document.getElementById("health-bar").style.width = health + "%";
+  document.getElementById("health-bar").innerText = Math.floor(health) + "%";
+  document.getElementById("energy-bar").style.width = energy + "%";
+  document.getElementById("energy-bar").innerText = Math.floor(energy);
+  document.getElementById("skill1-cd").style.background = `conic-gradient(rgba(0,0,0,0.5) ${skill1CD/6*360}deg, transparent 0deg)`;
+  document.getElementById("skill2-cd").style.background = `conic-gradient(rgba(0,0,0,0.5) ${skill2CD/6*360}deg, transparent 0deg)`;
+  document.getElementById("skill1").classList.toggle("disabled", skill1CD > 0);
+  document.getElementById("skill2").classList.toggle("disabled", skill2CD > 0);
+  document.getElementById("vuln-buff").innerText = `易伤: ${vulnStack*10}% (剩余时间: ${vulnTimer}s)`;
+}
+
+function log(msg) { document.getElementById("log").innerText = msg; }
+
+function gameOver(reason) {
+  clearInterval(gameInterval); clearInterval(smoothInterval);
+  clearInterval(selfExplosionInterval); clearInterval(bigAddPrepareInterval); clearInterval(bigAddCastInterval);
+  clearInterval(selfExplosionCastInterval);
+  log(reason);
+  document.getElementById("restart-btn").style.display = 'inline-block';
+}
+
+function resetGame() {
+  document.getElementById("game-ui").style.display = 'none';
+  document.getElementById("mode-selection").style.display = 'block';
+  document.getElementById("restart-btn").style.display = 'none';
+}
+
+function startSelfExplosionLoop() {
+  selfExplosionInterval = setInterval(() => { if (!selfExplosionCasting) startSelfExplosion(); }, 15000);
+}
+
+function startSelfExplosion() {
+  selfExplosionCasting = true;
+  log("自身爆炸读条中！");
+  selfExplosionTimer = 20;
+  selfExplosionCastInterval = setInterval(() => {
+    selfExplosionTimer--;
+    document.getElementById("explosion-bar").style.width = (100 - selfExplosionTimer*5) + "%";
+    if (selfExplosionTimer <= 0) {
+      clearInterval(selfExplosionCastInterval);
+      if (selfExplosionCasting) gameOver("Game Over! 队友团灭！");
+    }
+  }, 100);
+}
+
+function startBigAddPrepare() {
+  bigAddPrepareInterval = setInterval(() => {
+    nextBigAdd--;
+    document.getElementById("big-add-prepare").innerText = (nextBigAdd <= 10) ? `大怪即将读条：${nextBigAdd}s` : '';
+    if (nextBigAdd <= 0) {
+      clearInterval(bigAddPrepareInterval);
+      startBigAdd();
+    }
+  }, 1000);
+}
+
+function startBigAdd() {
+  bigAddCasting = true;
+  log("大怪爆炸读条中！");
+  bigAddTimer = 20;
+  bigAddCastInterval = setInterval(() => {
+    bigAddTimer--;
+    document.getElementById("big-add-bar").style.width = (100 - bigAddTimer*5) + "%";
+    if (bigAddTimer <= 0) {
+      clearInterval(bigAddCastInterval);
+      if (bigAddCasting) gameOver("Game Over! 大怪爆炸引爆！");
+    }
+  }, 100);
+}
+
+function skill1() {
+  if (skill1CD > 0) return;
+  vulnStack++; vulnTimer = 10;
+  if (mode === "advanced" && bigAddCasting) {
+    log("成功打断大怪爆炸！");
+    bigAddCasting = false;
+    clearInterval(bigAddCastInterval);
+    document.getElementById("big-add-bar").style.width = "0%";
+    document.getElementById("big-add-prepare").innerText = '';
+    nextBigAdd = 35;
+    startBigAddPrepare();
+  } else {
+    log("使用易伤！ 易伤已叠加至 " + (vulnStack*10) + "%");
+  }
+  skill1CD = 6;
+}
+
+function skill2() {
+  if (skill2CD > 0) return;
+  if (energy < 8) { log("能量不足无法使用技能2"); return; }
+  energy -= 8;
+  if (selfExplosionCasting) {
+    log("成功打断自身爆炸！");
+    selfExplosionCasting = false;
+    clearInterval(selfExplosionCastInterval);
+    document.getElementById("explosion-bar").style.width = "0%";
+  } else {
+    log("使用打断技能！");
+  }
+  skill2CD = 6;
+}
+
+function skill3() { health = Math.min(health + 10, 100); energy = Math.min(energy + 20, 100); log("吃水成功！"); }
+function skill4() { if (health > 20) { log("血量大于20%，无法脱离！"); return; } gameOver("游戏胜利！恭喜你！"); }
+
+document.getElementById("skill1").onclick = skill1;
+document.getElementById("skill2").onclick = skill2;
+document.getElementById("skill3").onclick = skill3;
+document.getElementById("skill4").onclick = skill4;
+document.addEventListener("keydown", (e) => { if (e.key === "1") skill1(); if (e.key === "2") skill2(); if (e.key === "3") skill3(); if (e.key === "4") skill4(); });
+</script>
+
+</body>
+</html>
+
